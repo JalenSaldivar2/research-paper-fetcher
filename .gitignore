@@ -1,0 +1,9 @@
+# Per-user data (never commit)
+paper_fetcher/seen.json
+paper_fetcher/school_queue.json
+paper_fetcher/logs/
+paper_fetcher/__pycache__/
+*.pdf
+papers_log.csv
+to_download_school.html
+*.lnk

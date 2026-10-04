@@ -1,0 +1,152 @@
+{
+  "_comment": "Use 'Paper Search Settings' to edit this. Topics below are example presets (SiC power electronics), off by default.",
+  "papers_per_day_min": 3,
+  "papers_per_day_max": 3,
+  "max_per_topic_per_day": 2,
+  "output_dir": "..",
+  "min_year": 2010,
+  "semantic_scholar_api_key": "",
+  "school_proxy_prefix": "",
+  "school_links_per_day": 3,
+  "relevance_terms": [
+    "sic",
+    "silicon carbide",
+    "gan",
+    "gallium nitride",
+    "ga2o3",
+    "wide-bandgap",
+    "wide bandgap",
+    "power module",
+    "power semiconductor",
+    "power device",
+    "power electronics",
+    "mosfet",
+    "igbt"
+  ],
+  "topics": [
+    {
+      "name": "Power Electronics",
+      "weight": 3,
+      "enabled": false,
+      "relevance_terms": [],
+      "queries": [
+        "Parasitics, Double-Pulse Test, Radiation, Cryogenic, Power Electronics Packaging, PCB, High Voltage, Thermal, Module Design and Packaging"
+      ]
+    },
+    {
+      "name": "Q3D Parasitics",
+      "weight": 3,
+      "queries": [
+        "SiC power module parasitic inductance commutation loop",
+        "ANSYS Q3D SiC power module",
+        "3.3 kV SiC power module parasitic extraction",
+        "SiC power module mutual inductance busbar"
+      ],
+      "enabled": false
+    },
+    {
+      "name": "Double-Pulse Test",
+      "weight": 3,
+      "queries": [
+        "3.3 kV SiC MOSFET double pulse test",
+        "SiC MOSFET switching overshoot ringing dv/dt",
+        "SiC MOSFET switching energy 1700 V",
+        "SiC MOSFET SPICE model power module"
+      ],
+      "enabled": false
+    },
+    {
+      "name": "Freewheel Diode PCB",
+      "weight": 3,
+      "queries": [
+        "SiC Schottky diode antiparallel SiC MOSFET",
+        "freewheel diode double pulse test PCB SiC"
+      ],
+      "enabled": false
+    },
+    {
+      "name": "Thermal",
+      "weight": 3,
+      "queries": [
+        "3.3 kV SiC thermal power module",
+        "SiC power module thermal resistance cooling",
+        "power module convection coefficient thermal simulation"
+      ],
+      "enabled": false
+    },
+    {
+      "name": "HV Insulation",
+      "weight": 3,
+      "queries": [
+        "SiC power module partial discharge",
+        "power module silicone gel partial discharge",
+        "medium voltage power module insulation hi-pot"
+      ],
+      "enabled": false
+    },
+    {
+      "name": "Module Design and Packaging",
+      "weight": 3,
+      "queries": [
+        "3.3 kV SiC power module design packaging",
+        "SiC half bridge power module packaging",
+        "medium voltage SiC power module fabrication"
+      ],
+      "enabled": false
+    },
+    {
+      "name": "Busbar",
+      "weight": 2,
+      "queries": [
+        "laminated busbar SiC power module"
+      ],
+      "enabled": false
+    },
+    {
+      "name": "Fabrication and Reflow",
+      "weight": 2,
+      "queries": [
+        "power module SAC305 die attach",
+        "power module Sn63Pb37 reflow",
+        "SiC power module DBC solder voiding",
+        "heavy aluminum wire bond SiC power module"
+      ],
+      "enabled": false
+    },
+    {
+      "name": "Parallel Dies",
+      "weight": 2,
+      "queries": [
+        "SiC MOSFET parallel current sharing power module",
+        "Kelvin source SiC power module"
+      ],
+      "enabled": false
+    },
+    {
+      "name": "Radiation",
+      "weight": 2,
+      "queries": [
+        "SiC MOSFET single event burnout",
+        "SiC MOSFET single event gate rupture high voltage",
+        "SiC power MOSFET total ionizing dose",
+        "SiC MOSFET atmospheric neutron avionics",
+        "GaN HEMT radiation power electronics",
+        "beta-Ga2O3 radiation power device"
+      ],
+      "enabled": false
+    },
+    {
+      "name": "Cryogenic",
+      "weight": 2,
+      "queries": [
+        "SiC MOSFET cryogenic 77 K",
+        "SiC power module cryogenic packaging",
+        "GaN HEMT cryogenic switching",
+        "power module cryogenic solder reliability",
+        "cryogenic converter SiC aircraft",
+        "liquid nitrogen SiC double pulse test"
+      ],
+      "enabled": false
+    }
+  ]
+}
