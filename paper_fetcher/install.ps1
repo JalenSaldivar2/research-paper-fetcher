@@ -1,5 +1,15 @@
-# Sets up the Research Paper Fetcher for the current Windows user:
-# finds Python, creates the "Paper Search Settings" shortcut, schedules a daily run, and opens settings.
+# ---------------------------------------------------------------------------
+# Research Paper Fetcher - installer (run via Install.bat)
+#
+# For the current Windows user, this:
+#   1. finds Python 3 with Tkinter (offering to install it with winget if missing)
+#   2. creates a "Paper Search Settings" shortcut next to Install.bat
+#   3. schedules fetch_papers.py to run daily (no admin rights needed)
+#   4. opens the settings window
+#
+# Re-running it is safe; it just updates the shortcut and schedule.
+# Change the time with:  install.ps1 -Time 7:30AM
+# ---------------------------------------------------------------------------
 param([string]$Time = "9:00AM")
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
