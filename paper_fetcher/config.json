@@ -148,5 +148,9 @@
       ],
       "enabled": false
     }
-  ]
+  ],
+  "recent_years": 5,
+  "google_scholar_serpapi_key": "",
+  "google_scholar_searches_per_day": 3,
+  "paragraph_min_similarity": 0.12
 }

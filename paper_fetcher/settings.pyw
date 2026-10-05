@@ -17,6 +17,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+from fetch_papers import STOPWORDS  # same "ignore these words" list the fetcher uses
+
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
 WINDOW_TITLE = "Paper Search Settings"
@@ -38,7 +40,7 @@ class SettingsWindow:
         self.root = root
         self.config = load_config()
         root.title(WINDOW_TITLE)
-        root.geometry("760x680")
+        root.geometry("860x780")
 
         self.pad = {"padx": 10, "pady": 4}
         self._build_daily_settings()
@@ -59,19 +61,39 @@ class SettingsWindow:
         self.per_day = tk.IntVar(value=self.config.get("papers_per_day_max", 5))
         ttk.Spinbox(counts, from_=1, to=25, width=5, textvariable=self.per_day).pack(side="left", padx=6)
 
-        ttk.Label(counts, text="School-login links per day:").pack(side="left", padx=(20, 0))
-        self.library_per_day = tk.IntVar(value=self.config.get("school_links_per_day", 3))
-        ttk.Spinbox(counts, from_=0, to=20, width=5, textvariable=self.library_per_day).pack(side="left", padx=6)
+        ttk.Label(counts, text="Only papers from the last").pack(side="left", padx=(20, 0))
+        self.recent_years = tk.IntVar(value=self.config.get("recent_years", 0))
+        ttk.Spinbox(counts, from_=0, to=50, width=4, textvariable=self.recent_years).pack(side="left", padx=4)
+        ttk.Label(counts, text="years (0 = any)").pack(side="left")
 
-        proxy_row = ttk.Frame(self.root)
-        proxy_row.pack(fill="x", **self.pad)
-        ttk.Label(proxy_row, text="Library proxy link (optional, for paywalled papers):").pack(side="left")
-        self.proxy = ttk.Entry(proxy_row, width=50)
-        self.proxy.insert(0, self.config.get("school_proxy_prefix", ""))
-        self.proxy.pack(side="left", padx=6, fill="x", expand=True)
-        ttk.Label(self.root, foreground="#666",
-                  text="e.g. https://proxy.library.yourschool.edu/login?url=   (leave blank to skip paywalled papers)"
-                  ).pack(anchor="w", padx=10)
+        # Second row, so the top row isn't cut off on smaller or high-DPI screens.
+        counts2 = ttk.Frame(self.root)
+        counts2.pack(fill="x", padx=10)
+        ttk.Label(counts2, text="Paywalled papers to list on the library-login page per day:").pack(side="left")
+        self.library_per_day = tk.IntVar(value=self.config.get("school_links_per_day", 3))
+        ttk.Spinbox(counts2, from_=0, to=20, width=4, textvariable=self.library_per_day).pack(side="left", padx=6)
+
+        # Optional extras: library proxy and Google Scholar key. Each is a label + entry + hint.
+        self.proxy = self._labeled_entry(
+            "Library proxy link (optional, for paywalled papers):",
+            self.config.get("school_proxy_prefix", ""),
+            "e.g. https://proxy.library.yourschool.edu/login?url=   (leave blank to skip paywalled papers)")
+        self.serpapi_key = self._labeled_entry(
+            "Google Scholar key (optional, free at serpapi.com):",
+            self.config.get("google_scholar_serpapi_key", ""),
+            "Google blocks scripts from searching Scholar directly; a SerpApi key lets the fetcher use it.",
+            show="*")
+
+    def _labeled_entry(self, label, value, hint, show=""):
+        """A one-line text box with a label on the left and a grey hint underneath."""
+        row = ttk.Frame(self.root)
+        row.pack(fill="x", padx=10, pady=(4, 0))
+        ttk.Label(row, text=label, width=48).pack(side="left")
+        entry = ttk.Entry(row, width=50, show=show)
+        entry.insert(0, value)
+        entry.pack(side="left", padx=6, fill="x", expand=True)
+        ttk.Label(self.root, foreground="#666", text=hint).pack(anchor="w", padx=10)
+        return entry
 
     def _build_add_search(self):
         """Middle section: name + search terms for a new search."""
@@ -83,8 +105,9 @@ class SettingsWindow:
         self.name = ttk.Entry(box, width=40)
         self.name.grid(row=0, column=1, sticky="we", padx=6, pady=3)
 
-        ttk.Label(box, text="What to search for\n(one search per line):").grid(row=1, column=0, sticky="nw", padx=6)
-        self.queries = tk.Text(box, height=4, width=50, font=("Segoe UI", 10))
+        ttk.Label(box, text="Describe what you want:\n\n• a paragraph in your\n   own words, or\n• short searches,\n   one per line",
+                  justify="left").grid(row=1, column=0, sticky="nw", padx=6)
+        self.queries = tk.Text(box, height=6, width=50, wrap="word", font=("Segoe UI", 10))
         self.queries.grid(row=1, column=1, sticky="we", padx=6, pady=3)
 
         self.only_new = tk.BooleanVar(value=False)
@@ -127,7 +150,10 @@ class SettingsWindow:
             self.enabled_vars.append(enabled)
             ttk.Checkbutton(self.rows, text=topic["name"], variable=enabled).grid(row=i, column=0, sticky="w", padx=4)
 
-            preview = "; ".join(topic.get("queries", []))
+            if topic.get("description"):
+                preview = "Paragraph: " + topic["description"]
+            else:
+                preview = "; ".join(topic.get("queries", []))
             if len(preview) > 70:
                 preview = preview[:70] + "..."
             ttk.Label(self.rows, text=preview, foreground="#666").grid(row=i, column=1, sticky="w", padx=8)
@@ -145,13 +171,23 @@ class SettingsWindow:
             topic["enabled"] = enabled.get()
 
     def add_search(self):
-        """Add the typed search to the list (or extend an existing one with the same name)."""
-        queries = [q.strip() for q in self.queries.get("1.0", "end").splitlines() if q.strip()]
-        if not queries:
-            messagebox.showwarning(WINDOW_TITLE, "Type at least one search.")
+        """Add the typed search to the list (or update an existing one with the same name).
+
+        Text with a long line (10+ words) is treated as a paragraph description;
+        otherwise each line is a separate keyword search.
+        """
+        text = self.queries.get("1.0", "end").strip()
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            messagebox.showwarning(WINDOW_TITLE, "Describe what you're looking for first.")
             return
+        is_paragraph = any(len(line.split()) >= 10 for line in lines)
+
         # The name becomes a folder, so drop characters Windows doesn't allow in folder names.
-        name = re.sub(r'[<>:"/\\|?*]+', "", self.name.get()).strip() or queries[0][:40]
+        # Default folder name: the first few meaningful words, e.g. "Partial Discharge Silicone Gel".
+        meaningful = [w.strip(".,;:()") for w in lines[0].split() if w.lower().strip(".,;:()") not in STOPWORDS]
+        default_name = " ".join(w[:1].upper() + w[1:] for w in meaningful[:4]) or "My Search"
+        name = re.sub(r'[<>:"/\\|?*]+', "", self.name.get() or default_name).strip()[:60]
 
         self._read_ticks()
         if self.only_new.get():
@@ -159,14 +195,22 @@ class SettingsWindow:
                 topic["enabled"] = False
 
         existing = next((t for t in self.config["topics"] if t["name"].lower() == name.lower()), None)
-        if existing:
-            existing["queries"] = list(dict.fromkeys(existing["queries"] + queries))  # merge, no repeats
+        if existing and is_paragraph:
+            existing["description"] = " ".join(lines)  # a new paragraph replaces the old one
+            existing["enabled"] = True
+        elif existing:
+            existing["queries"] = list(dict.fromkeys(existing.get("queries", []) + lines))  # merge, no repeats
             existing["enabled"] = True
         else:
-            # An empty relevance_terms list tells the fetcher to judge relevance by the
-            # search's own words instead of the preset keyword list.
-            self.config["topics"].insert(0, {"name": name, "weight": 3, "enabled": True,
-                                             "relevance_terms": [], "queries": queries})
+            topic = {"name": name, "weight": 3, "enabled": True,
+                     # An empty relevance_terms list tells the fetcher to judge relevance by
+                     # the search's own words instead of the preset keyword list.
+                     "relevance_terms": []}
+            if is_paragraph:
+                topic["description"] = " ".join(lines)
+            else:
+                topic["queries"] = lines
+            self.config["topics"].insert(0, topic)
 
         self.name.delete(0, "end")
         self.queries.delete("1.0", "end")
@@ -186,8 +230,9 @@ class SettingsWindow:
         try:
             per_day = int(self.per_day.get())
             library_per_day = int(self.library_per_day.get())
+            recent_years = int(self.recent_years.get())
         except (tk.TclError, ValueError):
-            messagebox.showwarning(WINDOW_TITLE, "Papers per day must be a number.")
+            messagebox.showwarning(WINDOW_TITLE, "The number boxes must contain whole numbers.")
             return False
         if not any(t.get("enabled", True) for t in self.config["topics"]):
             messagebox.showwarning(WINDOW_TITLE, "Tick at least one search.")
@@ -195,7 +240,9 @@ class SettingsWindow:
 
         self.config["papers_per_day_min"] = self.config["papers_per_day_max"] = max(1, per_day)
         self.config["school_links_per_day"] = max(0, library_per_day)
+        self.config["recent_years"] = max(0, recent_years)
         self.config["school_proxy_prefix"] = self.proxy.get().strip()
+        self.config["google_scholar_serpapi_key"] = self.serpapi_key.get().strip()
         save_config(self.config)
         self.status.config(text="Saved. The next scheduled run will use these settings.")
         return True
