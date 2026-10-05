@@ -20,13 +20,8 @@ Two kinds of search
                          turns it into several searches, then ranks every result by how
                          closely its title and abstract match the paragraph.
 
-Every result must be relevant: its title and abstract are compared with the topic's
-description (or its searches), and weak matches are dropped. Papers already saved,
-including near-duplicates such as a preprint and its published version, are skipped.
-
 Optionally, it also lists a few relevant *paywalled* papers in an HTML page whose links
-go through your library's proxy, so you can open them with your own school login, and
-keeps a citation list (IEEE or APA, plus BibTeX) of every paper it finds.
+go through your library's proxy, so you can open them with your own school login.
 
 Only the Python standard library is used, so there is nothing to install.
 
@@ -40,13 +35,11 @@ Files
     config.json          your settings (edited by the "Paper Search Settings" window)
     seen.json            papers already saved or known to be undownloadable
     school_queue.json    paywalled papers queued for the library-login page
-    citations.json       details of every paper found, used to build the citation lists
     logs/fetch.log       a log of every run
 """
 
 import csv
 import datetime as dt
-import difflib
 import html
 import json
 import math
@@ -69,7 +62,6 @@ HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
 SEEN_PATH = HERE / "seen.json"
 QUEUE_PATH = HERE / "school_queue.json"
-CITATIONS_PATH = HERE / "citations.json"
 LOG_DIR = HERE / "logs"
 
 USER_AGENT = "ResearchPaperFetcher/1.0 (personal literature search script)"
@@ -292,40 +284,10 @@ def load_seen(output_dir):
     if SEEN_PATH.exists():
         history = json.loads(SEEN_PATH.read_text(encoding="utf-8"))
     known = set(history.get("saved", [])) | set(history.get("failed", []))
-    known |= {"title:" + t for t in pdf_titles(output_dir)}
+    for pdf in output_dir.rglob("*.pdf"):
+        title_part = pdf.stem.split(" - ", 2)[-1]  # "2024 - Smith - Title" -> "Title"
+        known.add("title:" + normalize_title(title_part))
     return history, known
-
-
-def pdf_titles(output_dir):
-    """Normalized titles of the PDFs in the output folder, taken from their filenames."""
-    return {normalize_title(pdf.stem.split(" - ", 2)[-1])  # "2024 - Smith - Title" -> "Title"
-            for pdf in output_dir.rglob("*.pdf")}
-
-
-def is_near_duplicate(title, known_titles):
-    """Catch the same paper under a slightly different title, e.g. a preprint and its
-    journal version, or a title with and without its subtitle.
-
-    `known_titles` holds normalized titles (see normalize_title).
-    """
-    title = normalize_title(title)
-    if len(title) < 20:
-        return False
-    for other in known_titles:
-        if abs(len(other) - len(title)) > 0.3 * max(len(other), len(title)):
-            # Very different lengths: only a duplicate if one is the other plus a subtitle.
-            shorter, longer = sorted((title, other), key=len)
-            if len(shorter) >= 30 and longer.startswith(shorter):
-                return True
-            continue
-        if difflib.SequenceMatcher(None, title, other).ratio() >= 0.9:
-            return True
-    return False
-
-
-def titles_in(keys):
-    """The normalized titles among a set of keys."""
-    return {k[len("title:"):] for k in keys if k.startswith("title:")}
 
 
 def save_seen(history):
@@ -335,21 +297,19 @@ def save_seen(history):
 # ---------------------------------------------------------------------------
 # Search sources
 # ---------------------------------------------------------------------------
-# Each search function takes a query string and a (first year, last year) range,
-# where 0 means "no limit", and returns a list of paper records (see make_paper). A paper with an
+# Each search function takes a query string and the earliest publication year
+# wanted, and returns a list of paper records (see make_paper). A paper with an
 # empty pdf_url has no free PDF; those can still go on the library-login page.
 
-def search_google_scholar(query, years):
+def search_google_scholar(query, year_from):
     """Search Google Scholar through SerpApi (requires SERPAPI_KEY).
 
     Google Scholar has no official API and blocks automated scraping, so a
     service like SerpApi is the reliable way to use it from a script.
     """
     params = {"engine": "google_scholar", "q": query, "num": 20, "api_key": SERPAPI_KEY}
-    if years[0]:
-        params["as_ylo"] = years[0]
-    if years[1]:
-        params["as_yhi"] = years[1]
+    if year_from:
+        params["as_ylo"] = year_from
     data, _ = http_get("https://serpapi.com/search.json?" + urllib.parse.urlencode(params), retries=2)
     response = json.loads(data)
     if response.get("error"):
@@ -386,7 +346,7 @@ def search_google_scholar(query, years):
     return papers
 
 
-def search_arxiv(query, years):
+def search_arxiv(query, year_from):
     """Search arXiv (physics/engineering preprints). Every result has a free PDF."""
     ns = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
     words = [w for w in re.split(r"[^A-Za-z0-9.]+", query) if w]
@@ -424,7 +384,7 @@ def search_arxiv(query, years):
     return papers
 
 
-def search_semantic_scholar(query, years):
+def search_semantic_scholar(query, year_from):
     """Search Semantic Scholar, keeping only papers with an open-access PDF."""
     params = {
         "query": query,
@@ -432,8 +392,8 @@ def search_semantic_scholar(query, years):
         "openAccessPdf": "",  # only return papers that have a free PDF
         "fields": "title,abstract,authors,year,venue,externalIds,openAccessPdf",
     }
-    if years[0] or years[1]:
-        params["year"] = f"{years[0] or ''}-{years[1] or ''}"  # e.g. "2022-" or "2015-2020"
+    if year_from:
+        params["year"] = f"{year_from}-"
     headers = {"x-api-key": SEMANTIC_SCHOLAR_API_KEY} if SEMANTIC_SCHOLAR_API_KEY else None
     data, _ = http_get("https://api.semanticscholar.org/graph/v1/paper/search?" + urllib.parse.urlencode(params),
                        retries=4, backoff=10, headers=headers)
@@ -458,12 +418,10 @@ def search_semantic_scholar(query, years):
     return papers
 
 
-def _openalex_records(query, filters, years):
+def _openalex_records(query, filters, year_from):
     """Run an OpenAlex search and return the raw result list."""
-    if years[0]:
-        filters += f",from_publication_date:{years[0]}-01-01"
-    if years[1]:
-        filters += f",to_publication_date:{years[1]}-12-31"
+    if year_from:
+        filters += f",from_publication_date:{year_from}-01-01"
     params = {"search": query, "per-page": RESULTS_PER_SEARCH, "filter": filters}
     data, _ = http_get("https://api.openalex.org/works?" + urllib.parse.urlencode(params))
     return json.loads(data).get("results", [])
@@ -488,13 +446,13 @@ def _openalex_to_paper(work, pdf_url, source):
     )
 
 
-def search_openalex(query, years):
+def search_openalex(query, year_from):
     """Search OpenAlex for open-access papers (usually the most productive source)."""
     try:
         works = _openalex_records(query, "is_oa:true,type:article|proceedings-article|preprint|dissertation",
-                                  years)
+                                  year_from)
     except urllib.error.HTTPError:
-        works = _openalex_records(query, "is_oa:true", years)  # fall back if the type filter is rejected
+        works = _openalex_records(query, "is_oa:true", year_from)  # fall back if the type filter is rejected
     papers = []
     for work in works:
         pdf_url = (work.get("best_oa_location") or {}).get("pdf_url")
@@ -503,9 +461,9 @@ def search_openalex(query, years):
     return papers
 
 
-def search_openalex_paywalled(query, years):
+def search_openalex_paywalled(query, year_from):
     """Search OpenAlex for subscription-only papers with a DOI (for the library-login page)."""
-    works = _openalex_records(query, "is_oa:false,has_doi:true", years)
+    works = _openalex_records(query, "is_oa:false,has_doi:true", year_from)
     return [_openalex_to_paper(work, "", "OpenAlex (subscription)") for work in works]
 
 
@@ -522,20 +480,32 @@ SOURCES = [
 # Choosing which papers to keep
 # ---------------------------------------------------------------------------
 
-def has_required_term(paper, required_terms):
-    """True if the title or abstract contains at least one of the topic's keywords
-    (e.g. "sic", "power module"). Topics without a keyword list always pass."""
-    if not required_terms:
-        return True
+def is_relevant(paper, required_terms, min_year, query):
+    """Decide whether a keyword-search result is actually on-topic.
+
+    If the topic has a keyword list (e.g. "sic", "power module"), at least one keyword
+    must appear in the title or abstract. Custom searches have no list, so instead
+    at least 60% of the search's own words must appear. (Paragraph searches use
+    similarity_scores instead; see rank_candidates.)
+    """
+    if paper["year"] and paper["year"] < min_year:
+        return False
     text = (paper["title"] + " " + paper["abstract"]).lower()
-    # Whole-word matching, so "sic" doesn't match "physics" and "gan" doesn't match "organic".
-    return any(re.search(r"\b" + re.escape(term) + r"\b", text) for term in required_terms)
+    if required_terms:
+        # Whole-word matching, so "sic" doesn't match "physics" and "gan" doesn't match "organic".
+        return any(re.search(r"\b" + re.escape(term) + r"\b", text) for term in required_terms)
+    words = words_in(query, min_length=3)
+    return not words or sum(w in text for w in words) / len(words) >= 0.6
 
 
-def topic_profile(topic):
-    """The text a topic's results are compared against: its paragraph if it has one,
-    otherwise its name plus all of its searches."""
-    return topic.get("description") or " ".join([topic["name"]] + topic.get("queries", []))
+def keyword_score(paper, query):
+    """How many search words appear in the abstract and title (0 to 1.5)."""
+    words = words_in(query, min_length=2)
+    if not words:
+        return 0.0
+    text = (paper["title"] + " " + paper["abstract"]).lower()
+    title = paper["title"].lower()
+    return (sum(w in text for w in words) + 0.5 * sum(w in title for w in words)) / len(words)
 
 
 def bonus(paper):
@@ -554,33 +524,31 @@ NOT_A_PAPER = re.compile(r"\s*(guest\s+)?(foreword|editorial|preface|erratum|cor
                          r"retraction|front matter|table of contents|index|call for papers)\b", re.IGNORECASE)
 
 
-def rank_candidates(topic, candidates, required_terms, years, min_relevance):
-    """Return (score, paper) pairs for the relevant results, best first.
+def rank_candidates(topic, candidates, queries, required_terms, min_year, min_similarity):
+    """Return (score, paper) pairs for the on-topic results, best first.
 
-    Relevance blends two similarities (0 to 1):
-      * how well the title + abstract match the whole topic (its paragraph, or all its searches)
-      * how well they match the specific search that found the paper
-    The blend lets a paper about one item in a list of interests score well, while a
-    floor on whole-topic similarity keeps out papers from unrelated fields. Papers
-    outside the year range, journal front matter, and (for preset topics) papers
-    missing every required keyword are dropped.
+    Paragraph topics are judged by similarity to the whole paragraph; keyword
+    topics by keyword overlap with the query that found them.
     """
-    first_year, last_year = years
     candidates = [p for p in candidates
-                  # With a year range set, papers whose year is unknown are left out too.
-                  if not ((first_year or last_year) and not p["year"])
-                  and not (p["year"] and first_year and p["year"] < first_year)
-                  and not (p["year"] and last_year and p["year"] > last_year)
-                  and not NOT_A_PAPER.match(p["title"])
-                  and has_required_term(p, required_terms)]
+                  if not (p["year"] and p["year"] < min_year) and not NOT_A_PAPER.match(p["title"])]
     ranked = []
-    whole = similarity_scores(topic_profile(topic), candidates)
-    for i, paper in enumerate(candidates):
-        part = similarity_scores(paper["_query"], [paper])[0]
-        relevance = 0.5 * whole[i] + 0.5 * part
-        if whole[i] >= min_relevance / 2 and relevance >= min_relevance:
-            paper["_relevance"] = relevance
-            ranked.append((2 * relevance + bonus(paper), paper))
+    if topic.get("description"):
+        # Blend how well a paper matches the whole paragraph with how well it matches
+        # the specific search (part of the paragraph) that found it. The blend lets a
+        # paper about one item in a list of interests score well, while the floor on
+        # whole-paragraph similarity keeps out papers from unrelated fields.
+        whole = similarity_scores(topic["description"], candidates)
+        for i, paper in enumerate(candidates):
+            part = similarity_scores(paper["_query"], [paper])[0]
+            blended = 0.5 * whole[i] + 0.5 * part
+            if whole[i] >= min_similarity / 2 and blended >= min_similarity:
+                ranked.append((2 * blended + bonus(paper), paper))
+    else:
+        for paper in candidates:
+            query = paper.get("_query", queries[0])
+            if is_relevant(paper, required_terms, min_year, query):
+                ranked.append((keyword_score(paper, query) + bonus(paper), paper))
     ranked.sort(key=lambda pair: pair[0], reverse=True)
     return ranked
 
@@ -652,253 +620,6 @@ def is_permanent_failure(error):
     if isinstance(error, ValueError):
         return True
     return isinstance(error, urllib.error.HTTPError) and error.code < 500
-
-
-# ---------------------------------------------------------------------------
-# Citation list
-# ---------------------------------------------------------------------------
-# Every paper found (downloaded, or listed on the library-login page) is recorded in
-# citations.json in CSL-JSON, the standard format reference managers use. For papers
-# with a DOI the full details (volume, issue, pages...) come from doi.org itself.
-# citations.txt (IEEE or APA style) and citations.bib (BibTeX) are rebuilt from it
-# after every run.
-
-def load_citations():
-    if CITATIONS_PATH.exists():
-        return json.loads(CITATIONS_PATH.read_text(encoding="utf-8"))
-    return []
-
-
-def save_citations(records):
-    CITATIONS_PATH.write_text(json.dumps(records, indent=1, ensure_ascii=False), encoding="utf-8")
-
-
-def split_name(name):
-    """'Jane A. Smith' -> {'given': 'Jane A.', 'family': 'Smith'}."""
-    parts = name.split()
-    if len(parts) == 1:
-        return {"family": parts[0], "given": ""}
-    return {"family": parts[-1], "given": " ".join(parts[:-1])}
-
-
-def csl_for(paper):
-    """Bibliographic details for a paper: from doi.org when possible, else from search data."""
-    if paper.get("doi"):
-        try:
-            data, _ = http_get("https://doi.org/" + urllib.parse.quote(paper["doi"], safe="/"),
-                               accept="application/vnd.citationstyles.csl+json", retries=2, timeout=20)
-            csl = json.loads(data)
-            if csl.get("title"):
-                if isinstance(csl["title"], list):
-                    csl["title"] = csl["title"][0] if csl["title"] else ""
-                return csl
-        except Exception:
-            pass  # fall back to what the search returned
-    csl = {
-        "type": "article" if "arxiv" in paper.get("venue", "").lower() else "article-journal",
-        "title": paper["title"],
-        "author": [split_name(a) for a in paper.get("authors", []) if a and a != "et al."],
-        "container-title": paper.get("venue", ""),
-        "URL": paper.get("link", ""),
-    }
-    if paper.get("year"):
-        csl["issued"] = {"date-parts": [[paper["year"]]]}
-    if paper.get("doi"):
-        csl["DOI"] = paper["doi"]
-    return csl
-
-
-def add_citation(records, paper, topic_name, status, today):
-    """Record a found paper, once. status is "downloaded" or "library".
-    A paper first listed for the library page and later downloaded is upgraded."""
-    keys = keys_for(paper)
-    titles = titles_in(keys)
-    for record in records:
-        same = set(record["keys"]) & keys or is_near_duplicate(paper["title"], titles_in(record["keys"]))
-        if same:
-            if status == "downloaded" and record["status"] != "downloaded":
-                record["status"] = "downloaded"
-            return
-    records.append({"added": today, "topic": topic_name, "status": status,
-                    "keys": sorted(keys), "csl": csl_for(paper)})
-
-
-# doi.org sometimes uses Crossref's type names instead of CSL's; treat them alike.
-CONFERENCE_TYPES = {"paper-conference", "proceedings-article"}
-JOURNAL_TYPES = {"article-journal", "journal-article", "article"}
-
-
-def _year(csl):
-    parts = (csl.get("issued") or csl.get("published-print") or csl.get("published-online") or {}).get("date-parts")
-    return str(parts[0][0]) if parts and parts[0] and parts[0][0] else "n.d."
-
-
-def _initials(given):
-    """'Jane Ann' -> 'J. A.'  (hyphenated names keep the hyphen: 'Jean-Luc' -> 'J.-L.')"""
-    out = []
-    for part in given.replace(".", " ").split():
-        out.append("-".join(p[0] + "." for p in part.split("-") if p))
-    return " ".join(out)
-
-
-def _authors(csl):
-    return [a for a in csl.get("author", []) if a.get("family") or a.get("literal")]
-
-
-def _text(value):
-    """CSL fields are sometimes lists; also strip any HTML/MathML tags from titles."""
-    if isinstance(value, list):
-        value = value[0] if value else ""
-    return re.sub(r"<[^>]+>", "", str(value or "")).strip()
-
-
-def format_ieee(csl):
-    """IEEE style: A. B. Smith, C. Lee, and D. Wu, "Title," Journal, vol. 3, no. 2, pp. 1-9, 2024, doi: ..."""
-    names = [f"{_initials(a.get('given', ''))} {a.get('family', '')}".strip() if a.get("family") else a["literal"]
-             for a in _authors(csl)]
-    if len(names) > 6:
-        authors = names[0] + " et al."
-    elif len(names) > 2:
-        authors = ", ".join(names[:-1]) + ", and " + names[-1]
-    else:
-        authors = " and ".join(names)
-    parts = [f'{authors}, "{_text(csl.get("title"))},"' if authors else f'"{_text(csl.get("title"))},"']
-    if _text(csl.get("container-title")):
-        parts.append(("in " if csl.get("type") in CONFERENCE_TYPES else "") + _text(csl["container-title"]) + ",")
-    if csl.get("volume"):
-        parts.append(f"vol. {csl['volume']},")
-    if csl.get("issue"):
-        parts.append(f"no. {csl['issue']},")
-    if csl.get("page"):
-        parts.append(f"pp. {csl['page']}," if "-" in str(csl["page"]) else f"p. {csl['page']},")
-    year = _year(csl)
-    if csl.get("DOI"):
-        parts.append(f"{year}, doi: {csl['DOI']}.")
-    else:
-        parts.append(f"{year}." + (f" [Online]. Available: {csl['URL']}" if csl.get("URL") else ""))
-    return " ".join(parts)
-
-
-def format_apa(csl):
-    """APA 7 style: Smith, A. B., Lee, C., & Wu, D. (2024). Title. Journal, 3(2), 1-9. https://doi.org/..."""
-    names = [f"{a.get('family', '')}, {_initials(a.get('given', ''))}".rstrip(", ") if a.get("family") else a["literal"]
-             for a in _authors(csl)]
-    if len(names) > 20:
-        names = names[:19] + ["... " + names[-1]]
-    if len(names) > 1:
-        authors = ", ".join(names[:-1]) + ", & " + names[-1]
-    else:
-        authors = "".join(names)
-    text = f"{authors} ({_year(csl)}). {_text(csl.get('title')).rstrip('.')}."
-    source = _text(csl.get("container-title"))
-    if source:
-        text += f" {source}"
-        if csl.get("volume"):
-            text += f", {csl['volume']}" + (f"({csl['issue']})" if csl.get("issue") else "")
-        if csl.get("page"):
-            text += f", {csl['page']}"
-        text += "."
-    if csl.get("DOI"):
-        text += f" https://doi.org/{csl['DOI']}"
-    elif csl.get("URL"):
-        text += f" {csl['URL']}"
-    return text
-
-
-def to_bibtex(csl, used_keys):
-    """One BibTeX entry. Keys look like smith2024lowinductance and are kept unique."""
-    authors = _authors(csl)
-    first = re.sub(r"[^a-z]", "", (authors[0].get("family") or authors[0].get("literal", "")).lower()) if authors else "anon"
-    first_word = next((w for w in re.findall(r"[a-z]+", _text(csl.get("title")).lower()) if w not in STOPWORDS), "paper")
-    key = base = f"{first or 'anon'}{_year(csl).replace('n.d.', '')}{first_word}"
-    suffix = ord("a")
-    while key in used_keys:
-        key = base + chr(suffix)
-        suffix += 1
-    used_keys.add(key)
-
-    csl_type = csl.get("type", "")
-    if csl_type in JOURNAL_TYPES:
-        entry_type = "article"
-    elif csl_type in CONFERENCE_TYPES:
-        entry_type = "inproceedings"
-    else:
-        entry_type = {"thesis": "phdthesis", "dissertation": "phdthesis", "book": "book",
-                      "chapter": "incollection", "book-chapter": "incollection"}.get(csl_type, "misc")
-    container_field = {"article": "journal", "inproceedings": "booktitle", "incollection": "booktitle"}.get(
-        entry_type, "howpublished")
-    fields = {
-        "title": "{" + _text(csl.get("title")) + "}",  # double braces keep capitalization (e.g. "SiC")
-        "author": " and ".join(f"{a['family']}, {a.get('given', '')}".rstrip(", ") if a.get("family")
-                               else a["literal"] for a in authors),
-        container_field: _text(csl.get("container-title")),
-        "year": _year(csl) if _year(csl) != "n.d." else "",
-        "volume": csl.get("volume", ""),
-        "number": csl.get("issue", ""),
-        "pages": str(csl.get("page", "")).replace("-", "--"),
-        "publisher": _text(csl.get("publisher")),
-        "doi": csl.get("DOI", ""),
-        "url": csl.get("URL", "") if not csl.get("DOI") else "",
-    }
-    body = ",\n".join(f"  {name} = {{{value}}}" for name, value in fields.items() if value)
-    return f"@{entry_type}{{{key},\n{body}\n}}"
-
-
-def mark_hand_downloaded(records, folder_titles):
-    """Library-login papers you have since saved into the folder move to the downloaded list."""
-    for record in records:
-        if record["status"] == "library" and (titles_in(record["keys"]) & folder_titles
-                                              or is_near_duplicate(record["csl"].get("title", ""), folder_titles)):
-            record["status"] = "downloaded"
-
-
-def write_citation_files(output_dir, records, style):
-    """Rebuild citations.txt (numbered, grouped by topic) and citations.bib."""
-    formatter = format_apa if style.upper() == "APA" else format_ieee
-    lines = [f"Citation list ({'APA' if formatter is format_apa else 'IEEE'} style), "
-             f"updated {dt.date.today().isoformat()}", ""]
-    number = 1
-    for status, heading in (("downloaded", "PAPERS DOWNLOADED TO THIS FOLDER"),
-                            ("library", "PAPERS FOUND THAT NEED YOUR LIBRARY LOGIN (see to_download_school.html)")):
-        group = [r for r in records if r["status"] == status]
-        if not group:
-            continue
-        lines += [heading, "=" * len(heading), ""]
-        for topic in sorted({r["topic"] for r in group}):
-            lines += [topic, "-" * len(topic)]
-            for record in sorted((r for r in group if r["topic"] == topic),
-                                 key=lambda r: (_year(r["csl"]), _text(r["csl"].get("title"))), reverse=True):
-                citation = formatter(record["csl"])
-                if formatter is format_ieee:
-                    lines.append(f"[{number}] {citation}")
-                else:
-                    lines += [citation, ""]  # APA lists read better with a gap between entries
-                number += 1
-            lines.append("")
-    # utf-8-sig so Notepad and Word show accented names (e.g. "König") correctly.
-    (output_dir / "citations.txt").write_text("\n".join(lines), encoding="utf-8-sig")
-
-    used_keys = set()
-    entries = [to_bibtex(r["csl"], used_keys) for r in records]
-    (output_dir / "citations.bib").write_text("\n\n".join(entries) + "\n", encoding="utf-8")
-
-
-def backfill_citations(output_dir, records, queue):
-    """First run with citations on: add papers saved before this feature existed,
-    using papers_log.csv and the library-login queue."""
-    log_path = output_dir / "papers_log.csv"
-    if log_path.exists():
-        with open(log_path, encoding="utf-8-sig", newline="") as f:
-            for row in csv.DictReader(f):
-                doi = row.get("Link", "").removeprefix("https://doi.org/") if "doi.org/" in row.get("Link", "") else ""
-                paper = make_paper(row["Title"], "", [a.strip() for a in row.get("Authors", "").split(";")],
-                                   int(row["Year"]) if row.get("Year", "").isdigit() else 0, row.get("Venue"),
-                                   doi, "", "", row.get("Source", ""), link=row.get("Link", ""))
-                add_citation(records, paper, row.get("Topic", "Other"), "downloaded", row.get("Date Added", ""))
-    for item in queue:
-        paper = make_paper(item["title"], "", [a.strip() for a in item.get("authors", "").split(";")],
-                           item.get("year"), item.get("venue"), item.get("doi"), "", "", "", link=item.get("url", ""))
-        add_citation(records, paper, item["topic"], "library", item["added"])
 
 
 # ---------------------------------------------------------------------------
@@ -982,7 +703,7 @@ def write_library_page(output_dir, queue, proxy_prefix, known_keys):
 # Main run
 # ---------------------------------------------------------------------------
 
-def search_all_sources(topic_name, query, years, sources, rate_limited):
+def search_all_sources(topic_name, query, year_from, sources, rate_limited):
     """Run one query against every source and pool the results.
 
     A source that fails is skipped for this query; a source that rate-limits us
@@ -994,7 +715,7 @@ def search_all_sources(topic_name, query, years, sources, rate_limited):
         if name in rate_limited:
             continue
         try:
-            found = search(query, years)
+            found = search(query, year_from)
             for paper in found:
                 paper["_query"] = query
             results += found
@@ -1021,17 +742,14 @@ def main():
     default_terms = [t.lower() for t in config.get("relevance_terms", [])]
     proxy_prefix = config.get("school_proxy_prefix", "")
     library_per_day = config.get("school_links_per_day", 3)
-    min_relevance = config.get("min_relevance", config.get("paragraph_min_similarity", 0.12))
+    min_similarity = config.get("paragraph_min_similarity", 0.12)
     scholar_budget = config.get("google_scholar_searches_per_day", 3)
-    make_citations = config.get("make_citations", True)
-    citation_style = config.get("citation_style", "IEEE")
 
-    # Publication year range (0 = no limit). Older configs used "last N years" instead.
-    first_year = max(config.get("year_from", 0), config.get("min_year", 0))
-    if config.get("recent_years"):
-        first_year = max(first_year, THIS_YEAR - config["recent_years"] + 1)
-    last_year = config.get("year_to", 0)
-    years = (first_year, last_year)
+    # "Only papers from the last N years" (0 = any age), combined with the oldest year allowed.
+    recent_years = config.get("recent_years", 0)
+    min_year = config.get("min_year", 0)
+    if recent_years:
+        min_year = max(min_year, THIS_YEAR - recent_years + 1)
 
     topics = [t for t in config["topics"] if t.get("enabled", True) and (t.get("queries") or t.get("description"))]
     if not topics:
@@ -1044,12 +762,7 @@ def main():
     history, known_keys = load_seen(output_dir)
     queue = load_queue()
     queued_keys = set().union(*(keys_for(item) for item in queue)) if queue else set()
-    known_titles = titles_in(known_keys)
-    citations = load_citations() if make_citations else []
-    if make_citations and not CITATIONS_PATH.exists() and not dry_run:
-        backfill_citations(output_dir, citations, queue)
-    year_text = f"{first_year or 'any year'} to {last_year or 'now'}"
-    log(f"Run started (target {daily_target} papers, published {year_text}, "
+    log(f"Run started (target {daily_target} papers, papers from {min_year or 'any year'} on, "
         f"Google Scholar {'on' if SERPAPI_KEY else 'off'}, dry_run={dry_run})")
 
     today = dt.date.today().isoformat()
@@ -1072,12 +785,12 @@ def main():
             if SERPAPI_KEY and scholar_budget > 0:
                 sources.insert(0, ("Google Scholar", search_google_scholar))
                 scholar_budget -= 1
-            candidates += search_all_sources(topic["name"], query, years, sources, rate_limited)
+            candidates += search_all_sources(topic["name"], query, min_year, sources, rate_limited)
 
             # Also look for paywalled papers if the library page is turned on.
             if proxy_prefix and library_per_day > 0:
                 try:
-                    found = search_openalex_paywalled(query, years)
+                    found = search_openalex_paywalled(query, min_year)
                     for paper in found:
                         paper["_query"] = query
                     candidates += found
@@ -1087,18 +800,13 @@ def main():
 
         # Rank everything found for this topic, then drop papers we already have
         # and collapse duplicates that came from more than one source.
-        ranked, keys_this_batch, titles_this_batch = [], set(), set()
-        failed_keys = set(history["failed"])
-        for score, paper in rank_candidates(topic, candidates, required_terms, years, min_relevance):
+        ranked, keys_this_batch = [], set()
+        for score, paper in rank_candidates(topic, candidates, queries, required_terms, min_year, min_similarity):
             keys = keys_for(paper)
-            if keys & keys_this_batch or is_near_duplicate(paper["title"], titles_this_batch):
+            if keys & keys_this_batch:
                 continue
             keys_this_batch |= keys
-            titles_this_batch |= titles_in(keys)
-            if keys & known_keys and not keys & failed_keys:
-                continue
-            if not keys & known_keys and is_near_duplicate(paper["title"], known_titles):
-                log(f"    skip (near-duplicate of a saved paper): {paper['title'][:80]}")
+            if keys & known_keys and not keys & set(history["failed"]):
                 continue
             ranked.append((score, paper))
 
@@ -1120,7 +828,7 @@ def main():
             planned_files.add(destination)
 
             if dry_run:
-                log(f"    would save: {destination.name}  [{paper['source']}, relevance {paper['_relevance']:.2f}]")
+                log(f"    would save: {destination.name}  [{paper['source']}, score {score:.2f}]")
                 saved_for_topic += 1
                 csv_rows.append(None)  # placeholder so the daily count still works
                 continue
@@ -1139,13 +847,10 @@ def main():
             saved_for_topic += 1
             history["saved"].extend(sorted(keys))
             known_keys |= keys
-            known_titles |= titles_in(keys)
-            if make_citations:
-                add_citation(citations, paper, topic["name"], "downloaded", today)
             relative_path = destination.relative_to(output_dir)
             csv_rows.append([today, topic["name"], paper["title"], short_authors(paper, 6), paper["year"],
                              paper["venue"], paper["link"], paper["source"], paper["_query"], str(relative_path)])
-            log(f"    saved ({size // 1024} KB, relevance {paper['_relevance']:.2f}): {relative_path}")
+            log(f"    saved ({size // 1024} KB, score {score:.2f}): {relative_path}")
 
     # --- pick the best few paywalled papers for the library page ---
     failed_keys = set(history["failed"])
@@ -1169,8 +874,6 @@ def main():
             "url": paper["link"],
             "filename": f"{topic_name}\\{safe_filename(paper)}",
         })
-        if make_citations:
-            add_citation(citations, paper, topic_name, "library", today)
         log(f"    queued for library access: {paper['title'][:90]}")
 
     # --- write everything out ---
@@ -1183,10 +886,6 @@ def main():
             QUEUE_PATH.write_text(json.dumps(queue, indent=1), encoding="utf-8")
             _, known_now = load_seen(output_dir)  # re-scan so hand-saved PDFs show as done
             write_library_page(output_dir, queue, proxy_prefix, known_now)
-        if make_citations:
-            mark_hand_downloaded(citations, pdf_titles(output_dir))
-            save_citations(citations)
-            write_citation_files(output_dir, citations, citation_style)
 
     log(f"Run finished: {len(csv_rows)} new paper(s), {len(library_added)} added to the library-login page")
     if len(csv_rows) < daily_min:

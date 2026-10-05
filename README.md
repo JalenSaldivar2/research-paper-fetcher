@@ -15,7 +15,21 @@ You can type either of these in the settings window:
 - **A paragraph in your own words.** For example: *"Experimental papers on how commutation loop inductance and busbar layout affect switching overshoot in 3.3 kV SiC half-bridge modules, especially ones that validate Q3D parasitic extraction against measurements."* The fetcher turns the paragraph into several searches, then ranks every result by how closely its title and abstract match your paragraph.
 - **Short searches, one per line.** For example, `laminated busbar SiC power module`.
 
-**Only papers from the last N years** keeps results recent (0 means any age). Newer papers are also ranked a little higher.
+**Published from / to** limits results to a range of years (leave blank for any year). Newer papers are also ranked a little higher.
+
+## Relevance and duplicates
+
+Every result's title and abstract are compared with your search (TF-IDF similarity), and weak matches are dropped. **How closely papers must match** sets the bar: *Loose* finds more papers, some off-topic, and *Strict* finds fewer, closer matches. Each saved paper's relevance score is shown in `paper_fetcher\logs\fetch.log`.
+
+A paper is never downloaded twice. It's matched by DOI, arXiv ID and title, including near-identical titles such as a preprint and its published version, or a title with and without its subtitle.
+
+## Citation list
+
+With **Keep a citation list** ticked, every paper the fetcher finds is added to:
+- `citations.txt`: a numbered list in IEEE or APA style, grouped by topic. Downloaded papers come first, then papers that need your library login.
+- `citations.bib`: the same papers in BibTeX, for LaTeX, Zotero or Mendeley.
+
+For papers with a DOI, the details (volume, issue, pages) come straight from doi.org.
 
 ## Google Scholar (optional)
 
@@ -36,7 +50,6 @@ If your school has an EZproxy link (usually `https://proxy.library.yourschool.ed
 ## Notes
 
 - **Semantic Scholar:** rate-limits anonymous use. For more results, paste a free [API key](https://www.semanticscholar.org/product/api) into `semantic_scholar_api_key` in `paper_fetcher\config.json`.
-- **Paragraph matching:** if a paragraph search lets through too many off-topic papers, raise `paragraph_min_similarity` in `config.json` (default 0.12). If it finds too few, lower it.
 - **Change the run time:** `powershell -ExecutionPolicy Bypass -File paper_fetcher\install.ps1 -Time 7:30AM`
 - **Stop it:** double-click **Uninstall.bat**. Your papers are kept.
 - **Requirements:** Python 3 standard library only, with no packages to install.

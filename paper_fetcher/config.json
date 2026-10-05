@@ -149,8 +149,12 @@
       "enabled": false
     }
   ],
-  "recent_years": 5,
+  "recent_years": 0,
   "google_scholar_serpapi_key": "",
   "google_scholar_searches_per_day": 3,
-  "paragraph_min_similarity": 0.12
+  "year_from": 0,
+  "year_to": 0,
+  "min_relevance": 0.12,
+  "make_citations": true,
+  "citation_style": "IEEE"
 }

@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import tkinter as tk
+from datetime import date
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -22,6 +23,10 @@ from fetch_papers import STOPWORDS  # same "ignore these words" list the fetcher
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
 WINDOW_TITLE = "Paper Search Settings"
+
+# How closely a paper's title + abstract must match a search (the fetcher's min_relevance).
+# Loose finds more papers with some off-topic ones; Strict finds fewer, closer matches.
+STRICTNESS = {"Loose": 0.08, "Normal": 0.12, "Strict": 0.18}
 
 
 def load_config():
@@ -40,7 +45,7 @@ class SettingsWindow:
         self.root = root
         self.config = load_config()
         root.title(WINDOW_TITLE)
-        root.geometry("860x780")
+        root.geometry("900x840")
 
         self.pad = {"padx": 10, "pady": 4}
         self._build_daily_settings()
@@ -61,10 +66,34 @@ class SettingsWindow:
         self.per_day = tk.IntVar(value=self.config.get("papers_per_day_max", 5))
         ttk.Spinbox(counts, from_=1, to=25, width=5, textvariable=self.per_day).pack(side="left", padx=6)
 
-        ttk.Label(counts, text="Only papers from the last").pack(side="left", padx=(20, 0))
-        self.recent_years = tk.IntVar(value=self.config.get("recent_years", 0))
-        ttk.Spinbox(counts, from_=0, to=50, width=4, textvariable=self.recent_years).pack(side="left", padx=4)
-        ttk.Label(counts, text="years (0 = any)").pack(side="left")
+        # Publication year range. Older settings files used "last N years"; convert that to a start year.
+        first_year = self.config.get("year_from", 0)
+        if not first_year and self.config.get("recent_years"):
+            first_year = date.today().year - self.config["recent_years"] + 1
+        ttk.Label(counts, text="Published from").pack(side="left", padx=(20, 0))
+        self.year_from = tk.StringVar(value=str(first_year or ""))
+        ttk.Entry(counts, width=6, textvariable=self.year_from).pack(side="left", padx=4)
+        ttk.Label(counts, text="to").pack(side="left")
+        self.year_to = tk.StringVar(value=str(self.config.get("year_to") or ""))
+        ttk.Entry(counts, width=6, textvariable=self.year_to).pack(side="left", padx=4)
+        ttk.Label(counts, text="(blank = any year)", foreground="#666").pack(side="left")
+
+        # Relevance strictness and the citation list.
+        quality = ttk.Frame(self.root)
+        quality.pack(fill="x", padx=10, pady=(0, 4))
+        ttk.Label(quality, text="How closely papers must match:").pack(side="left")
+        current = self.config.get("min_relevance", self.config.get("paragraph_min_similarity", 0.12))
+        closest = min(STRICTNESS, key=lambda name: abs(STRICTNESS[name] - current))
+        self.strictness = tk.StringVar(value=closest)
+        ttk.Combobox(quality, textvariable=self.strictness, values=list(STRICTNESS), width=8,
+                     state="readonly").pack(side="left", padx=6)
+
+        self.make_citations = tk.BooleanVar(value=self.config.get("make_citations", True))
+        ttk.Checkbutton(quality, text="Keep a citation list (citations.txt + citations.bib), style:",
+                        variable=self.make_citations).pack(side="left", padx=(20, 4))
+        self.citation_style = tk.StringVar(value=self.config.get("citation_style", "IEEE"))
+        ttk.Combobox(quality, textvariable=self.citation_style, values=["IEEE", "APA"], width=6,
+                     state="readonly").pack(side="left")
 
         # Second row, so the top row isn't cut off on smaller or high-DPI screens.
         counts2 = ttk.Frame(self.root)
@@ -230,9 +259,14 @@ class SettingsWindow:
         try:
             per_day = int(self.per_day.get())
             library_per_day = int(self.library_per_day.get())
-            recent_years = int(self.recent_years.get())
+            # Blank year boxes mean "no limit" (stored as 0).
+            year_from = int(self.year_from.get().strip() or 0)
+            year_to = int(self.year_to.get().strip() or 0)
         except (tk.TclError, ValueError):
-            messagebox.showwarning(WINDOW_TITLE, "The number boxes must contain whole numbers.")
+            messagebox.showwarning(WINDOW_TITLE, "The number and year boxes must contain whole numbers.")
+            return False
+        if year_from and year_to and year_from > year_to:
+            messagebox.showwarning(WINDOW_TITLE, "The 'from' year must be before the 'to' year.")
             return False
         if not any(t.get("enabled", True) for t in self.config["topics"]):
             messagebox.showwarning(WINDOW_TITLE, "Tick at least one search.")
@@ -240,7 +274,11 @@ class SettingsWindow:
 
         self.config["papers_per_day_min"] = self.config["papers_per_day_max"] = max(1, per_day)
         self.config["school_links_per_day"] = max(0, library_per_day)
-        self.config["recent_years"] = max(0, recent_years)
+        self.config["year_from"], self.config["year_to"] = year_from, year_to
+        self.config["recent_years"] = 0  # replaced by the year range above
+        self.config["min_relevance"] = STRICTNESS[self.strictness.get()]
+        self.config["make_citations"] = self.make_citations.get()
+        self.config["citation_style"] = self.citation_style.get()
         self.config["school_proxy_prefix"] = self.proxy.get().strip()
         self.config["google_scholar_serpapi_key"] = self.serpapi_key.get().strip()
         save_config(self.config)

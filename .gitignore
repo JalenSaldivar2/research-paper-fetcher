@@ -7,3 +7,6 @@ paper_fetcher/__pycache__/
 papers_log.csv
 to_download_school.html
 *.lnk
+paper_fetcher/citations.json
+citations.txt
+citations.bib
