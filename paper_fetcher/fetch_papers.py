@@ -190,7 +190,7 @@ def clause_keywords(clause):
     return [w for w in words if w.lower() not in STOPWORDS and not re.fullmatch(r"\d", w)]
 
 
-def queries_from_paragraph(paragraph, max_queries=10):
+def queries_from_paragraph(paragraph, max_queries=16):
     """Turn a free-text description into a handful of short keyword searches."""
     clauses = [clause_keywords(c) for c in split_clauses(paragraph)]
     clauses = [c for c in clauses if c]
